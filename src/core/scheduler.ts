@@ -268,6 +268,9 @@ export class Scheduler {
         if (!coro) return false;
         this.paused.add(id);
         this.heap.remove((e) => e.coro.id === id);
+        this.sleepHeap.remove((e) => e.coro.id === id);
+        this.sleeping.delete(id);
+        coro.waitUntilMs = undefined;
         return true;
     }
 
@@ -279,6 +282,9 @@ export class Scheduler {
         const coro = this.activeMap.get(id);
         if (!coro || !this.paused.has(id)) return false;
         this.paused.delete(id);
+        if (coro.state === CoroutineState.Suspended) {
+            return true;
+        }
         this.requeue(coro);
         this.ensureRunning();
         return true;
