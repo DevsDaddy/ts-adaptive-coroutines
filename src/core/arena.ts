@@ -34,6 +34,8 @@ export interface IArena {
     bytes(offset: number, size: number): Uint8Array;
 
     free(): void;
+
+    mark(): number;
 }
 
 /**
@@ -190,6 +192,13 @@ export class Arena implements IArena {
      */
     public slice(): ArrayBuffer {
         return this._buffer.slice(0, this._offset);
+    }
+
+    /**
+     * Get current mark
+     */
+    public mark(): number {
+        return this._offset;
     }
 
     /**
