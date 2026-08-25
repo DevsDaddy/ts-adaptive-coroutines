@@ -78,3 +78,4 @@ export {WasmArena} from "./core/wasm.arena";
 export {AtomicHeap} from "./utils/atomic.heap";
 export {Tracer, type TraceEvent} from "./utils/tracing";
 export {WorkStealingPool, Deque, type StealableQueue} from "./core/work-stealing";
+export * from "./core/helpers";
