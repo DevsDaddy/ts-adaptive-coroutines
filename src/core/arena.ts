@@ -22,11 +22,17 @@ export interface IArena {
     readonly capacity: number;
     readonly used: number;
     readonly buffer: ArrayBuffer;
+
     alloc(size: number): number;
+
     allocAligned(size: number, align?: number): number;
+
     reset(mark?: number): void;
+
     view(offset: number, size: number): DataView;
+
     bytes(offset: number, size: number): Uint8Array;
+
     free(): void;
 }
 
