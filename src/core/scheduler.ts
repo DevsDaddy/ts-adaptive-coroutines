@@ -30,7 +30,7 @@ import {
     type PriorityConfig,
     type IPriorityStrategy
 } from "./priority";
-import {isEffect, type Effect} from "./effects";
+import {isEffect, awaitPromise, type Effect, AwaitEffect} from "./effects";
 import {DefaultEventLoopAdapter, type EventLoopAdapter} from "../runtime/event-loop";
 import {hrtimeMs} from "../utils/time";
 import {FrameStack, StackFrame, FrameState} from "./frame";
@@ -75,6 +75,33 @@ type QueueEntry = {
     effective: number;
     enqueuedAt: number;
 };
+
+/* Any factory */
+type AnyFactory<T> = () => AnyGenerator<T> | Promise<T>;
+
+/**
+ * Check if is promise
+ * @param value {any}
+ */
+function isPromiseLike<T>(value: unknown): value is Promise<T> {
+    return value instanceof Promise || (value !== null && typeof (value as { then?: unknown }).then === "function");
+}
+
+/**
+ * Wrap factory
+ * @param factory
+ */
+function wrapFactory<T>(factory: AnyFactory<T>): () => AnyGenerator<T> | Generator<AwaitEffect<T>, unknown, T> {
+    return () => {
+        const result = factory();
+        if (isPromiseLike(result)) {
+            return (function* () {
+                return yield awaitPromise(result);
+            })();
+        }
+        return result;
+    };
+}
 
 /**
  * Scheduler Implementation
@@ -184,15 +211,13 @@ export class Scheduler {
      * @param factory
      * @param options
      */
-    public spawn<T>(factory: () => AnyGenerator<T>, options?: {
-        priority?: number | undefined;
-        name?: string | undefined
-    }): CoroutineHandle<T> {
+    public spawn<T>(factory: AnyFactory<T>, options?: { priority?: number | undefined; name?: string | undefined }): CoroutineHandle<T> {
         if (this.activeMap.size >= this.opts.maxCoroutines) throw new Error(`Max coroutines ${this.opts.maxCoroutines} reached`);
+        const wrappedFactory = wrapFactory(factory);
         const priority = clampPriority(options?.priority ?? this.opts.priorityConfig.default, this.opts.priorityConfig);
         const now = this.opts.eventLoop.now();
         const coro = this.pool.acquire() as Coroutine<T> & Coroutine<unknown>;
-        coro.reset(this.nextId++, {priority, name: options?.name}, factory as () => AnyGenerator<unknown>, now);
+        coro.reset(this.nextId++, {priority, name: options?.name}, wrappedFactory as () => AnyGenerator<unknown>, now);
         this.tracer.recordEnqueue(coro.id, priority, now);
         const handle = createHandle(coro as Coroutine<T>);
         this.enqueue(coro as unknown as Coroutine<unknown>, now);
@@ -215,10 +240,7 @@ export class Scheduler {
      * @param factory
      * @param options
      */
-    public async run<T>(factory: () => AnyGenerator<T>, options?: {
-        priority?: number | undefined;
-        name?: string | undefined
-    }): Promise<T> {
+    public async run<T>(factory: AnyFactory<T>, options?: { priority?: number | undefined; name?: string | undefined }): Promise<T> {
         const handle = this.spawn(factory, options);
         return handle.promise;
     }

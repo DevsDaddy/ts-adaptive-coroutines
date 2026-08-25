@@ -26,13 +26,6 @@ import {
     CoroutineState
 } from "../src";
 
-/* Manual Scheduler */
-function manualScheduler(opts: Record<string, unknown> = {}): { sched: Scheduler; loop: ManualEventLoopAdapter } {
-    const loop = new ManualEventLoopAdapter();
-    const sched = new Scheduler({eventLoop: loop, quantumMs: 100, ...opts} as never);
-    return {sched, loop};
-}
-
 describe("Scheduler basic", () => {
     it("runs simple generator to completion", async () => {
         const sched = createScheduler({quantumMs: 100});
@@ -327,5 +320,35 @@ describe("Scheduler basic", () => {
         const s = createScheduler();
         expect(s).toBeInstanceOf(Scheduler);
         s.destroy();
+    });
+});
+
+describe('Scheduler async/await support', () => {
+    it('should run an async function and return its result', async () => {
+        const scheduler = createScheduler();
+        const result = await scheduler.run(async () => {
+            await new Promise(resolve => setTimeout(resolve, 10));
+            return 42;
+        });
+        expect(result).toBe(42);
+    });
+
+    it('should propagate errors from async functions', async () => {
+        const scheduler = createScheduler();
+        const promise = scheduler.run(async () => {
+            await new Promise(resolve => setTimeout(resolve, 10));
+            throw new Error('boom');
+        });
+        await expect(promise).rejects.toThrow('boom');
+    });
+
+    it('should allow cancellation of an async coroutine', async () => {
+        const scheduler = createScheduler();
+        const handle = scheduler.spawn(async () => {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            return 'done';
+        });
+        setTimeout(() => handle.cancel(), 10);
+        await expect(handle.promise).rejects.toThrow(/cancelled/i);
     });
 });
