@@ -1,5 +1,5 @@
 # Welcome to Adaptive Coroutines
-![Typescript Adaptive Coroutines](images/cover.png)
+![Typescript Adaptive Coroutines](https://github.com/DevsDaddy/ts-adaptive-coroutines/raw/main/images/cover.png)
 
 **A library of adaptive cooperative coroutines for TypeScript/JavaScript**
 Provides high-level control over asynchronous execution, priorities, memory, and multithreading. Ideal for high-load applications, games, interactive interfaces, and data stream processing.

@@ -1,6 +1,6 @@
 {
   "name": "ts-adaptive-coroutines",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Extremely fast and optimized TypeScript adaptive coroutines library. Zero-GC arena, priority management and scheduler.",
   "type": "module",
   "main": "./dist/index.js",
