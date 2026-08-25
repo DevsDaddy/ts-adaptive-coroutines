@@ -137,10 +137,16 @@ export class Coroutine<T = unknown> {
         if (this.state === CoroutineState.Completed || this.state === CoroutineState.Cancelled || this.state === CoroutineState.Failed) return;
         this.state = CoroutineState.Cancelled;
         this.cancelled = true;
-        try {
-            const g = this.generator as Generator<unknown, T, unknown> | undefined;
-            g?.return?.(undefined as unknown as T);
-        } catch {
+        const gen = this.generator as Generator<unknown, T, unknown> | AsyncGenerator<unknown, T, unknown> | undefined;
+        if (gen) {
+            try {
+                const result = gen.return?.(undefined as unknown as T);
+                if (result instanceof Promise) {
+                    result.catch(() => {
+                    });
+                }
+            } catch {
+            }
         }
         this._reject(new CancelError(`Coroutine ${this.id} cancelled`));
     }
