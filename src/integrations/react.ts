@@ -9,10 +9,18 @@
  * @updated         24.08.2026
  */
 /* Import required modules */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createScheduler, Scheduler, type SchedulerOptions } from "../core/scheduler";
-import { CoroutineState } from "../core/coroutine";
-import type { AnyGenerator } from "../core/coroutine";
+import {
+    useCallback,
+    useContext,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+} from "react";
+import {createScheduler, Scheduler, type SchedulerOptions} from "../core/scheduler";
+import {CoroutineState} from "../core/coroutine";
+import type {AnyGenerator, CoroutineHandle} from "../core/coroutine";
+import { SchedulerContext } from "./schedulerProvider";
 
 /* Coroutine status */
 export type CoroutineStatus = "idle" | "running" | "suspended" | "completed" | "cancelled" | "failed";
@@ -46,6 +54,7 @@ function mapState(s: CoroutineState): CoroutineStatus {
 export interface UseCoroutineOptions<T> extends SchedulerOptions {
     priority?: number;
     autoStart?: boolean;
+    scheduler?: Scheduler;
 }
 
 /**
@@ -61,6 +70,31 @@ export interface UseCoroutineReturn<T> {
     resume: () => void;
     setPriority: (p: number) => void;
     isRunning: boolean;
+    isPaused: boolean;
+}
+
+/**
+ * Use scheduler hook
+ * @param options {SchedulerOptions} Scheduler options
+ * @param autoCreate {boolean} Auto create scheduler
+ */
+export function useScheduler(options?: SchedulerOptions, autoCreate: boolean = true): Scheduler | undefined {
+    const contextScheduler = useContext(SchedulerContext);
+    const [localScheduler, setLocalScheduler] = useState<Scheduler | undefined>(() =>
+        !contextScheduler && autoCreate ? createScheduler(options) : undefined
+    );
+    const ref = useRef<Scheduler | undefined>(localScheduler);
+    ref.current = contextScheduler ?? localScheduler;
+
+    useEffect(() => {
+        if (!contextScheduler && localScheduler) {
+            return () => {
+                localScheduler.destroy();
+            };
+        }
+    }, [contextScheduler, localScheduler]);
+
+    return ref.current;
 }
 
 /**
@@ -68,84 +102,163 @@ export interface UseCoroutineReturn<T> {
  * @param factory Coroutine
  * @param options Coroutine Options
  */
-export function useCoroutine<T>(factory: () => AnyGenerator<T>, options: UseCoroutineOptions<T> = {}): UseCoroutineReturn<T> {
-    const { priority, autoStart = true, ...schedulerOpts } = options;
-    const [scheduler] = useState(() => createScheduler(schedulerOpts));
-    const schedulerRef = useRef<Scheduler | undefined>(scheduler);
-    const handleRef = useRef<ReturnType<Scheduler["spawn"]> | undefined>(undefined);
+export function useCoroutine<T>(
+    factory: () => AnyGenerator<T>,
+    options: UseCoroutineOptions<T> = {}
+): UseCoroutineReturn<T> {
+    const {
+        priority,
+        autoStart = true,
+        scheduler: externalScheduler,
+        ...schedulerOpts
+    } = options;
+
+    // Get scheduler: from props, context or create new local
+    const contextScheduler = useContext(SchedulerContext);
+    const [localScheduler] = useState(() =>
+        !externalScheduler && !contextScheduler ? createScheduler(schedulerOpts) : null
+    );
+    const scheduler = externalScheduler ?? contextScheduler ?? localScheduler!;
+
+    // Links
+    const schedulerRef = useRef<Scheduler>(scheduler);
+    schedulerRef.current = scheduler;
+    const handleRef = useRef<CoroutineHandle<any> | null>(null);
     const factoryRef = useRef(factory);
     factoryRef.current = factory;
 
+    // States
     const [status, setStatus] = useState<CoroutineStatus>("idle");
     const [result, setResult] = useState<T | undefined>(undefined);
     const [error, setError] = useState<unknown>(undefined);
-    const [paused, setPaused] = useState(false);
+    const [pausedFlag, setPausedFlag] = useState(false);
 
-    const start = useCallback(() => {
-        const sched = schedulerRef.current as Scheduler;
-        if (handleRef.current) {
-            const s = handleRef.current.getState();
-            if (s === CoroutineState.Running || s === CoroutineState.Suspended || s === CoroutineState.Pending) return;
-        }
+    // Helper function to collect state before new start launched
+    const resetState = useCallback(() => {
         setError(undefined);
         setResult(undefined);
         setStatus("running");
-        const handle = sched.spawn(factoryRef.current as () => AnyGenerator<unknown>, priority === undefined ? {} : { priority });
-        handleRef.current = handle as unknown as ReturnType<Scheduler["spawn"]>;
+        setPausedFlag(false);
+    }, []);
+
+    // Start coroutine
+    const start = useCallback(() => {
+        const sched = schedulerRef.current;
+        if (!sched) return;
+
+        // If had active coroutine - do not run new
+        if (handleRef.current) {
+            const currentState = handleRef.current.getState();
+            if (
+                currentState === CoroutineState.Running ||
+                currentState === CoroutineState.Suspended ||
+                currentState === CoroutineState.Pending
+            ) {
+                return;
+            }
+        }
+
+        resetState();
+        const handle = sched.spawn(factoryRef.current, priority !== undefined ? { priority } : {});
+        handleRef.current = handle;
+
         handle.promise
-            .then((v) => {
-                setResult(v as T);
+            .then((value) => {
+                if (handleRef.current !== handle) return; // устаревший handle
+                setResult(value as T);
                 setStatus("completed");
             })
-            .catch((e) => {
-                setError(e);
-                const state = (handle as unknown as { getState: () => CoroutineState }).getState();
+            .catch((err) => {
+                if (handleRef.current !== handle) return;
+                setError(err);
+                const state = handle.getState();
                 setStatus(state === CoroutineState.Cancelled ? "cancelled" : "failed");
+            })
+            .finally(() => {
+                if (handleRef.current === handle) {
+                    handleRef.current = null;
+                }
             });
-    }, [priority]);
+    }, [priority, resetState]);
 
+    // Cancel
     const cancel = useCallback(() => {
         handleRef.current?.cancel();
-        setStatus("cancelled");
     }, []);
 
+    // Pause
     const pause = useCallback(() => {
-        const h = handleRef.current;
-        if (h) (schedulerRef.current as Scheduler).pause(h.id);
-        setPaused(true);
-        setStatus("suspended");
+        const handle = handleRef.current;
+        if (handle) {
+            const sched = schedulerRef.current;
+            if (sched && "pause" in sched) {
+                (sched as Scheduler).pause(handle.id);
+            }
+            setPausedFlag(true);
+            setStatus("suspended");
+        }
     }, []);
 
+    // Resume
     const resume = useCallback(() => {
-        const h = handleRef.current;
-        if (h) (schedulerRef.current as Scheduler).resume(h.id);
-        setPaused(false);
-        setStatus("running");
+        const handle = handleRef.current;
+        if (handle) {
+            const sched = schedulerRef.current;
+            if (sched && "resume" in sched) {
+                (sched as Scheduler).resume(handle.id);
+            }
+            setPausedFlag(false);
+            setStatus("running");
+        }
     }, []);
 
+    // Change priority
     const setPriority = useCallback((p: number) => {
-        const h = handleRef.current;
-        if (h) h.setPriority(p);
+        handleRef.current?.setPriority(p);
     }, []);
 
+    // Autostart
     useEffect(() => {
         if (autoStart) start();
     }, [autoStart, start]);
 
+    // Clear on unmount
     useEffect(() => {
-        const sched = schedulerRef.current as Scheduler;
+        const sched = localScheduler;
         return () => {
             handleRef.current?.cancel();
-            sched.destroy();
-            schedulerRef.current = undefined;
+            if (sched) {
+                sched.destroy();
+            }
         };
-    }, []);
+    }, [localScheduler]);
 
-    const isRunning = useMemo(() => status === "running" || status === "suspended", [status]);
+    const isRunning = useMemo(
+        () => status === "running" || status === "suspended",
+        [status]
+    );
+    const isPaused = pausedFlag;
 
-    void paused;
+    return {
+        status,
+        result,
+        error,
+        start,
+        cancel,
+        pause,
+        resume,
+        setPriority,
+        isRunning,
+        isPaused,
+    };
+}
 
-    return { status, result, error, start, cancel, pause, resume, setPriority, isRunning };
+/**
+ * Create local scheduler
+ * @param options {SchedulerOptions} Scheduler options
+ */
+export function createLocalScheduler(options?: SchedulerOptions): Scheduler {
+    return createScheduler(options);
 }
 
 /**
@@ -153,11 +266,7 @@ export function useCoroutine<T>(factory: () => AnyGenerator<T>, options: UseCoro
  * @param options {SchedulerOptions} Scheduler options
  */
 export function useCoroutineScope(options?: SchedulerOptions): Scheduler {
-    const [scheduler] = useState(() => createScheduler(options));
-    const ref = useRef<Scheduler>(scheduler);
-    useEffect(() => {
-        const s = ref.current;
-        return () => s.destroy();
-    }, []);
-    return ref.current;
+    const scheduler = useScheduler(options, true);
+    if (!scheduler) throw new Error("Scheduler could not be created");
+    return scheduler;
 }
